@@ -9,7 +9,7 @@ from flax.linen import initializers as flax_initializers
 from proto import model_config_pb2
 
 from .shared import Ffn
-from .utils import get_activation
+from .utils import get_activation, RMSNorm
 
 
 class EncoderTower(nnx.Module):
@@ -45,9 +45,22 @@ class EncoderTower(nnx.Module):
                 for _ in range(config.num_blocks)
             ]
         )
+        self.pyramid_projection = nnx.Linear(
+            in_features=in_features * (config.num_blocks // 4),
+            out_features=in_features,
+            rngs=rngs,
+        )
+        self.initial_norm = RMSNorm(in_features, eps=1e-3)
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        return self.encoders(x)
+        x = self.initial_norm(x)
+        outputs = []
+        for i, encoder_block in enumerate(self.encoders):
+            x = encoder_block(x)
+            if (i + 1) % 4 == 0:
+                outputs.append(x)
+        concatenated = jnp.concatenate(outputs, axis=-1)
+        return self.pyramid_projection(concatenated)
 
 
 class EncoderBlock(nnx.Module):
@@ -75,6 +88,7 @@ class EncoderBlock(nnx.Module):
 
         self.alpha = math.pow(2.0 * config.num_blocks, -0.25)
         self.ln1 = nnx.LayerNorm(in_features, epsilon=1e-3, rngs=rngs)
+        self.rmsnorm1 = RMSNorm(in_features, eps=1e-3)
         self.ffn = Ffn(
             in_features=in_features,
             hidden_features=config.dff,
@@ -82,13 +96,14 @@ class EncoderBlock(nnx.Module):
             deepnorm_beta=deepnorm_beta,
             rngs=rngs,
         )
+        self.rmsnorm2 = RMSNorm(in_features, eps=1e-3)
         self.ln2 = nnx.LayerNorm(in_features, epsilon=1e-3, rngs=rngs)
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        x = x + self.mha(x) * self.alpha
-        out1 = self.ln1(x)
-        ffn_out = self.ffn(out1)
-        return self.ln2(out1 + ffn_out * self.alpha)
+        
+        out1 = x + self.mha(self.rmsnorm1(x))
+        ffn_out = self.ffn(self.rmsnorm2(out1))
+        return self.ln2(out1 + ffn_out)
 
 
 class MultiHeadAttention(nnx.Module):

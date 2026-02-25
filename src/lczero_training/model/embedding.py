@@ -5,7 +5,7 @@ from flax import nnx
 from proto import model_config_pb2
 
 from .shared import Ffn
-from .utils import get_activation
+from .utils import RMSNorm, get_activation
 
 
 class Embedding(nnx.Module):
@@ -39,7 +39,7 @@ class Embedding(nnx.Module):
             out_features=embedding_size,
             rngs=rngs,
         )
-        self.norm = nnx.LayerNorm(embedding_size, epsilon=1e-3, rngs=rngs)
+        self.gate_norm = RMSNorm(embedding_size, eps=1e-3)
         self.ma_gating = MaGating(feature_shape=(64, embedding_size), rngs=rngs)
         self.deepnorm_alpha = deepnorm_alpha
         self.ffn = Ffn(
@@ -49,23 +49,28 @@ class Embedding(nnx.Module):
             deepnorm_beta=deepnorm_beta,
             rngs=rngs,
         )
-        self.out_norm = nnx.LayerNorm(embedding_size, epsilon=1e-3, rngs=rngs)
+        self.ffn_norm = RMSNorm(embedding_size, eps=1e-3)
+        self.final_norm = RMSNorm(embedding_size, eps=1e-3)
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        # Preprocess positional info and concatenate to input.
+        x = jnp.concatenate([x[..., 0:13], x[..., 103:112]], axis=-1)
+
         pos_info = self.preprocess(x[..., :12].flatten()).reshape((64, -1))
         x = jnp.concatenate([x, pos_info], axis=1)
 
-        # Square embedding.
         x = self.embedding(x)
         x = get_activation(self.activation)(x)
-        x = self.norm(x)
-        x = self.ma_gating(x)
-        # FFN block with residual connection and layer norm.
-        x = x + self.ffn(x) * self.deepnorm_alpha
-        x = self.out_norm(x)
-        return x
 
+        # Pre-LN gating sublayer
+        x = x + self.ma_gating(self.gate_norm(x))   # gate_norm: a LayerNorm
+
+        # Pre-LN FFN sublayer
+        x = x + self.ffn(self.ffn_norm(x))          # ffn_norm: another LayerNorm
+
+        # Optional final norm (common in Pre-LN stacks)
+        x = self.final_norm(x)                      # final_norm: LayerNorm
+
+        return x
 
 class MaGating(nnx.Module):
     """Applies multiplicative and additive gating."""
