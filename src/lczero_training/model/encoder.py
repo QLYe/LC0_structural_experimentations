@@ -21,6 +21,7 @@ class EncoderTower(nnx.Module):
     ):
         smolgen_shared_gen_dense = None
         assert config.HasField("smolgen")
+        assert config.num_blocks % 4 == 0
         if config.HasField("smolgen"):
             smolgen_shared_gen_dense = nnx.Linear(
                 in_features=config.smolgen.gen_size,
@@ -29,16 +30,18 @@ class EncoderTower(nnx.Module):
                 rngs=rngs,
             )
 
-        self.encoders = nnx.List([
-            EncoderBlock(
-                in_features=in_features,
-                config=config,
-                defaults=defaults,
-                smol_gen_dense=smolgen_shared_gen_dense,
-                rngs=rngs,
-            )
-            for _ in range(config.num_blocks)
-        ])
+        self.encoders = nnx.Sequential(
+            *[
+                EncoderBlock(
+                    in_features=in_features,
+                    config=config,
+                    defaults=defaults,
+                    smol_gen_dense=smolgen_shared_gen_dense,
+                    rngs=rngs,
+                )
+                for _ in range(config.num_blocks)
+            ]
+        )
 
 
         self.pyramid_projection = nnx.Linear(
@@ -52,7 +55,7 @@ class EncoderTower(nnx.Module):
 
     def __call__(self, x: jax.Array) -> jax.Array:
         outputs = []
-        for i, encoder_block in enumerate(self.encoders):
+        for i, encoder_block in enumerate(self.encoders.layers):
             x = encoder_block(x)
             if (i + 1) % 4 == 0:
                 outputs.append(x)
