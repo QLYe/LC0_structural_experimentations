@@ -1,11 +1,24 @@
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 from flax import nnx
 from jax.nn import mish
 
 from proto import net_pb2
 from proto.hlo_pb2 import XlaShapeProto
+
+
+class RMSNorm(nnx.Module):
+    """RMS Normalization layer."""
+
+    def __init__(self, dim: int, eps: float = 1e-6):
+        self.scale = nnx.Param(jnp.ones(dim))
+        self.eps = eps
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        rms = jnp.sqrt(jnp.mean(x**2, axis=-1, keepdims=True) + self.eps)
+        return (x / rms) * self.scale
 
 
 def get_activation(

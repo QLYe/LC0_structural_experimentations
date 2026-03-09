@@ -1,3 +1,7 @@
+# Disclaimer
+
+This repository is forked and modified from [lczero_training](https://github.com/LeelaChessZero/lczero-training) for personal interest.
+
 # Training
 
 The training pipeline resides in `tf`, this requires tensorflow running on linux (Ubuntu 16.04 in this case). (It can be made to work on windows too, but it takes more effort.)
