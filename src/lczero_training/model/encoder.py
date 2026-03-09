@@ -29,18 +29,17 @@ class EncoderTower(nnx.Module):
                 rngs=rngs,
             )
 
-        self.encoders = nnx.Sequential(
-            *[
-                EncoderBlock(
-                    in_features=in_features,
-                    config=config,
-                    defaults=defaults,
-                    smol_gen_dense=smolgen_shared_gen_dense,
-                    rngs=rngs,
-                )
-                for _ in range(config.num_blocks)
-            ]
-        )
+        self.encoders = nnx.List([
+            EncoderBlock(
+                in_features=in_features,
+                config=config,
+                defaults=defaults,
+                smol_gen_dense=smolgen_shared_gen_dense,
+                rngs=rngs,
+            )
+            for _ in range(config.num_blocks)
+        ])
+
 
         self.pyramid_projection = nnx.Linear(
             in_features=in_features * (config.num_blocks // 4),
