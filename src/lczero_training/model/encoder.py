@@ -1,10 +1,8 @@
-import math
 from typing import Optional
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from flax.linen import initializers as flax_initializers
 
 from proto import model_config_pb2
 
@@ -19,7 +17,6 @@ class EncoderTower(nnx.Module):
         in_features: int,
         config: model_config_pb2.EncoderConfig,
         defaults: model_config_pb2.DefaultsConfig,
-        deepnorm_beta: float,
         rngs: nnx.Rngs,
     ):
         smolgen_shared_gen_dense = None
@@ -39,32 +36,36 @@ class EncoderTower(nnx.Module):
                     config=config,
                     defaults=defaults,
                     smol_gen_dense=smolgen_shared_gen_dense,
-                    deepnorm_beta=deepnorm_beta,
                     rngs=rngs,
                 )
                 for _ in range(config.num_blocks)
             ]
         )
+
         self.pyramid_projection = nnx.Linear(
             in_features=in_features * (config.num_blocks // 4),
             out_features=in_features,
             rngs=rngs,
         )
-        self.initial_norm = RMSNorm(in_features, eps=1e-3)
+
+        # Optional final norm after the whole tower.
+        self.final_norm = RMSNorm(in_features, eps=1e-3)
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        x = self.initial_norm(x)
         outputs = []
         for i, encoder_block in enumerate(self.encoders):
             x = encoder_block(x)
             if (i + 1) % 4 == 0:
                 outputs.append(x)
+
         concatenated = jnp.concatenate(outputs, axis=-1)
-        return self.pyramid_projection(concatenated)
+        x = self.pyramid_projection(concatenated)
+        x = self.final_norm(x)
+        return x
 
 
 class EncoderBlock(nnx.Module):
-    """A single block of the transformer encoder."""
+    """Pre-norm transformer encoder block."""
 
     def __init__(
         self,
@@ -73,37 +74,34 @@ class EncoderBlock(nnx.Module):
         config: model_config_pb2.EncoderConfig,
         defaults: model_config_pb2.DefaultsConfig,
         smol_gen_dense: Optional[nnx.Linear],
-        deepnorm_beta: float,
         rngs: nnx.Rngs,
     ):
         assert (smol_gen_dense is not None) == config.HasField("smolgen")
+
+        self.attn_norm = RMSNorm(in_features, eps=1e-3)
+        self.ffn_norm = RMSNorm(in_features, eps=1e-3)
+
         self.mha = MultiHeadAttention(
             in_features=in_features,
             config=config,
             defaults=defaults,
             smol_gen_dense=smol_gen_dense,
-            deepnorm_beta=deepnorm_beta,
             rngs=rngs,
         )
 
-        self.alpha = math.pow(2.0 * config.num_blocks, -0.25)
-        self.ln1 = nnx.LayerNorm(in_features, epsilon=1e-3, rngs=rngs)
-        self.rmsnorm1 = RMSNorm(in_features, eps=1e-3)
         self.ffn = Ffn(
             in_features=in_features,
             hidden_features=config.dff,
             hidden_activation=defaults.ffn_activation,
-            deepnorm_beta=deepnorm_beta,
+            # Neutralize DeepNorm effect if Ffn still expects this arg.
+            deepnorm_beta=1.0,
             rngs=rngs,
         )
-        self.rmsnorm2 = RMSNorm(in_features, eps=1e-3)
-        self.ln2 = nnx.LayerNorm(in_features, epsilon=1e-3, rngs=rngs)
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        
-        out1 = x + self.mha(self.rmsnorm1(x))
-        ffn_out = self.ffn(self.rmsnorm2(out1))
-        return self.ln2(out1 + ffn_out)
+        x = x + self.mha(self.attn_norm(x))
+        x = x + self.ffn(self.ffn_norm(x))
+        return x
 
 
 class MultiHeadAttention(nnx.Module):
@@ -115,7 +113,6 @@ class MultiHeadAttention(nnx.Module):
         config: model_config_pb2.EncoderConfig,
         defaults: model_config_pb2.DefaultsConfig,
         smol_gen_dense: Optional[nnx.Linear],
-        deepnorm_beta: float,
         *,
         rngs: nnx.Rngs,
     ):
@@ -123,31 +120,29 @@ class MultiHeadAttention(nnx.Module):
         assert depth % config.heads == 0, (
             "Model depth must be divisible by the number of heads."
         )
+
         self.activation = defaults.activation
         self.depth = depth
         self.num_heads = config.heads
+
         self.q = nnx.Linear(
-            in_features=in_features, out_features=depth, rngs=rngs
+            in_features=in_features,
+            out_features=depth,
+            rngs=rngs,
         )
         self.k = nnx.Linear(
-            in_features=in_features, out_features=depth, rngs=rngs
+            in_features=in_features,
+            out_features=depth,
+            rngs=rngs,
         )
-        deepnorm_init = flax_initializers.variance_scaling(
-            scale=deepnorm_beta,
-            mode="fan_avg",
-            distribution="truncated_normal",
-        )
-
         self.v = nnx.Linear(
             in_features=in_features,
             out_features=depth,
-            kernel_init=deepnorm_init,
             rngs=rngs,
         )
         self.output_dense = nnx.Linear(
             in_features=depth,
             out_features=in_features,
-            kernel_init=deepnorm_init,
             rngs=rngs,
         )
 
@@ -167,13 +162,12 @@ class MultiHeadAttention(nnx.Module):
         q, k, v = self.q(x), self.k(x), self.v(x)
 
         head_depth = self.depth // self.num_heads
-        # Reshape for multi-head attention.
+
         q, k, v = (
             t.reshape((-1, self.num_heads, head_depth)).transpose((1, 0, 2))
             for t in (q, k, v)
         )
 
-        # Scaled dot-product attention.
         logits = jnp.einsum("...qd,...kd->...qk", q, k)
         logits /= jnp.sqrt(k.shape[-1]).astype(k.dtype)
 
@@ -183,7 +177,6 @@ class MultiHeadAttention(nnx.Module):
         attention_weights = nnx.softmax(logits, axis=-1)
         scaled_attention = jnp.matmul(attention_weights, v)
 
-        # Reshape back to original dimensions.
         scaled_attention = scaled_attention.transpose((1, 0, 2)).reshape(
             (-1, self.depth)
         )
@@ -204,39 +197,41 @@ class Smolgen(nnx.Module):
         rngs: nnx.Rngs,
     ):
         self.heads = heads
+
         self.compress = nnx.Linear(
             in_features=in_features,
             out_features=config.hidden_channels,
             use_bias=False,
             rngs=rngs,
         )
+
         self.dense1 = nnx.Linear(
             in_features=config.hidden_channels * 64,
             out_features=config.hidden_size,
             rngs=rngs,
         )
-        self.ln1 = nnx.LayerNorm(config.hidden_size, epsilon=1e-3, rngs=rngs)
+        self.norm1 = RMSNorm(config.hidden_size, eps=1e-3)
 
         self.dense2 = nnx.Linear(
             in_features=config.hidden_size,
             out_features=config.gen_size * heads,
             rngs=rngs,
         )
-        self.ln2 = nnx.LayerNorm(
-            config.gen_size * heads, epsilon=1e-3, rngs=rngs
-        )
+        self.norm2 = RMSNorm(config.gen_size * heads, eps=1e-3)
+
         self.weight_gen_dense = weight_gen_dense
         self.activation = config.activation or defaults.activation
 
     def __call__(self, x: jax.Array) -> jax.Array:
         compressed = self.compress(x).flatten()
+
         hidden = self.dense1(compressed)
         hidden = get_activation(self.activation)(hidden)
-        hidden = self.ln1(hidden)
+        hidden = self.norm1(hidden)
 
         gen_from = self.dense2(hidden)
         gen_from = get_activation(self.activation)(gen_from)
-        gen_from = self.ln2(gen_from)
+        gen_from = self.norm2(gen_from)
         gen_from = gen_from.reshape((self.heads, -1))
 
         out = self.weight_gen_dense(gen_from)

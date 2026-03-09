@@ -21,7 +21,7 @@ class Embedding(nnx.Module):
         deepnorm_beta: float,
         rngs: nnx.Rngs,
     ):
-        self._input_channels = input_channels
+        self._input_channels = 22
         dense_size = config.dense_size
         embedding_size = config.embedding_size
         self.activation = defaults.activation
@@ -35,7 +35,7 @@ class Embedding(nnx.Module):
 
         assert embedding_size > 0
         self.embedding = nnx.Linear(
-            in_features=input_channels + dense_size,
+            in_features=self._input_channels + dense_size,
             out_features=embedding_size,
             rngs=rngs,
         )
@@ -54,6 +54,8 @@ class Embedding(nnx.Module):
 
     def __call__(self, x: jax.Array) -> jax.Array:
         x = jnp.concatenate([x[..., 0:13], x[..., 103:112]], axis=-1)
+        # maybe rollback x shape in next test for rich history
+        
 
         pos_info = self.preprocess(x[..., :12].flatten()).reshape((64, -1))
         x = jnp.concatenate([x, pos_info], axis=1)
@@ -62,13 +64,13 @@ class Embedding(nnx.Module):
         x = get_activation(self.activation)(x)
 
         # Pre-LN gating sublayer
-        x = x + self.ma_gating(self.gate_norm(x))   # gate_norm: a LayerNorm
+        x = self.ma_gating(self.gate_norm(x))   # gate_norm: a LayerNorm
 
         # Pre-LN FFN sublayer
         x = x + self.ffn(self.ffn_norm(x))          # ffn_norm: another LayerNorm
 
         # Optional final norm (common in Pre-LN stacks)
-        x = self.final_norm(x)                      # final_norm: LayerNorm
+        # x = self.final_norm(x)                      # final_norm: LayerNorm
 
         return x
 

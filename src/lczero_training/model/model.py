@@ -38,7 +38,7 @@ class LczeroModel(nnx.Module):
             in_features=config.embedding.embedding_size,
             config=config.encoder,
             defaults=config.defaults,
-            deepnorm_beta=deepnorm_beta,
+            # deepnorm_beta=deepnorm_beta,
             rngs=rngs,
         )
 
@@ -66,6 +66,8 @@ class LczeroModel(nnx.Module):
         x = jnp.astype(x, get_dtype(self.config.defaults.compute_dtype))
         x = jnp.transpose(x, (1, 2, 0))
         x = jnp.reshape(x, (64, self._input_channels))
+        print("x before embedding:", x.shape)
+        print("embedding expected in_features:", self.embedding.embedding.kernel.value.shape[0])
         x = self.embedding(x)
         x = self.encoders(x)
 
@@ -87,7 +89,7 @@ def _tmp_make_config() -> model_config_pb2.ModelConfig:
     config.embedding.dff = 1536
     config.embedding.embedding_size = 1024
 
-    config.encoder.num_blocks = 15
+    config.encoder.num_blocks = 16
     config.encoder.dff = 1536
     config.encoder.d_model = 1024
     config.encoder.heads = 32
