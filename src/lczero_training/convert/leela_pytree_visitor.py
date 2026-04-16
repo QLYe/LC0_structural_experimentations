@@ -33,8 +33,8 @@ class LeelaPytreeWeightsVisitor:
             weights.ip_emb_w,
             weights.ip_emb_b,
         )
-        self.layernorm(
-            nnx_dict["norm"],
+        self.rmsnorm(
+            nnx_dict["gate_norm"],
             weights.ip_emb_ln_gammas,
             weights.ip_emb_ln_betas,
         )
@@ -45,8 +45,8 @@ class LeelaPytreeWeightsVisitor:
             nnx_dict["ma_gating"]["add_gate"]["gate"], weights.ip_add_gate
         )
         self.ffn(nnx_dict["ffn"], weights.ip_emb_ffn)
-        self.layernorm(
-            nnx_dict["out_norm"],
+        self.rmsnorm(
+            nnx_dict["ffn_norm"],
             weights.ip_emb_ffn_ln_gammas,
             weights.ip_emb_ffn_ln_betas,
         )
@@ -63,19 +63,33 @@ class LeelaPytreeWeightsVisitor:
             None,
         )
 
-        # assert len(nnx_dict["encoders"]["layers"]) == len(weights.encoder)
         for i in range(len(nnx_dict["encoders"]["layers"])):
             self.encoder_block(
                 nnx_dict["encoders"]["layers"][i], weights.encoder[i]
             )
 
+        self.matmul(
+            nnx_dict["pyramid_projection"],
+            weights.ip_enc_pyramid_w,
+            weights.ip_enc_pyramid_b,
+        )
+        self.rmsnorm(
+            nnx_dict["final_norm"],
+            weights.ip_enc_final_norm_gammas,
+            weights.ip_enc_final_norm_betas,
+        )
+
     def encoder_block(
         self, nnx_dict: nnx.State, weights: net_pb2.Weights.EncoderLayer
     ) -> None:
         self.mha(nnx_dict["mha"], weights.mha)
-        self.layernorm(nnx_dict["ln1"], weights.ln1_gammas, weights.ln1_betas)
+        self.rmsnorm(
+            nnx_dict["attn_norm"], weights.ln1_gammas, weights.ln1_betas
+        )
         self.ffn(nnx_dict["ffn"], weights.ffn)
-        self.layernorm(nnx_dict["ln2"], weights.ln2_gammas, weights.ln2_betas)
+        self.rmsnorm(
+            nnx_dict["ffn_norm"], weights.ln2_gammas, weights.ln2_betas
+        )
 
     def mha(self, nnx_dict: nnx.State, weights: net_pb2.Weights.MHA) -> None:
         self.matmul(nnx_dict["q"], weights.q_w, weights.q_b)
@@ -89,9 +103,21 @@ class LeelaPytreeWeightsVisitor:
     ) -> None:
         self.matmul(nnx_dict["compress"], weights.compress, None)
         self.matmul(nnx_dict["dense1"], weights.dense1_w, weights.dense1_b)
-        self.layernorm(nnx_dict["ln1"], weights.ln1_gammas, weights.ln1_betas)
+        self.rmsnorm(
+            nnx_dict["norm1"], weights.ln1_gammas, weights.ln1_betas
+        )
         self.matmul(nnx_dict["dense2"], weights.dense2_w, weights.dense2_b)
-        self.layernorm(nnx_dict["ln2"], weights.ln2_gammas, weights.ln2_betas)
+        self.rmsnorm(
+            nnx_dict["norm2"], weights.ln2_gammas, weights.ln2_betas
+        )
+
+    def rmsnorm(
+        self,
+        nnx_dict: nnx.State,
+        scales: net_pb2.Weights.Layer,
+        biases: net_pb2.Weights.Layer,
+    ) -> None:
+        self.tensor(nnx_dict["scale"], scales)
 
     def layernorm(
         self,

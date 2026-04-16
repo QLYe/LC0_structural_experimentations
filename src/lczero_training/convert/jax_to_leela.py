@@ -33,6 +33,16 @@ class JaxToLeela(LeelaPytreeWeightsVisitor):
         finally:
             embedding_kernel.value = original_values
 
+    def rmsnorm(
+        self,
+        nnx_dict: nnx.State,
+        scales: net_pb2.Weights.Layer,
+        biases: net_pb2.Weights.Layer,
+    ) -> None:
+        super().rmsnorm(nnx_dict, scales, biases)
+        zero_bias = nnx.Param(jnp.zeros_like(nnx_dict["scale"].value))
+        self.tensor(zero_bias, biases)
+
     def tensor(
         self,
         param: nnx.Param,
@@ -61,7 +71,7 @@ class JaxToLeela(LeelaPytreeWeightsVisitor):
     ) -> None:
         for i in range(len(nnx_dict["encoders"]["layers"])):
             weights.encoder.append(weights.EncoderLayer())
-        return super().encoder_tower(nnx_dict=nnx_dict, weights=weights)
+        super().encoder_tower(nnx_dict=nnx_dict, weights=weights)
 
 
 @dataclasses.dataclass
