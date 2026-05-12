@@ -21,7 +21,7 @@ class Embedding(nnx.Module):
         deepnorm_beta: float,
         rngs: nnx.Rngs,
     ):
-        self._input_channels = 22
+        self._input_channels = input_channels
         dense_size = config.dense_size
         embedding_size = config.embedding_size
         self.activation = defaults.activation
@@ -53,26 +53,23 @@ class Embedding(nnx.Module):
         self.final_norm = RMSNorm(embedding_size, eps=1e-3)
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        x = jnp.concatenate([x[..., 0:13], x[..., 103:112]], axis=-1)
-        # maybe rollback x shape in next test for rich history
-        
-
         pos_info = self.preprocess(x[..., :12].flatten()).reshape((64, -1))
         x = jnp.concatenate([x, pos_info], axis=1)
 
         x = self.embedding(x)
         x = get_activation(self.activation)(x)
 
-        # Pre-LN gating sublayer
-        x = self.ma_gating(self.gate_norm(x))   # gate_norm: a LayerNorm
+        # Pre-LN gating sublayer.
+        x = self.ma_gating(self.gate_norm(x))
 
-        # Pre-LN FFN sublayer
-        x = x + self.ffn(self.ffn_norm(x))          # ffn_norm: another LayerNorm
+        # Pre-LN FFN sublayer.
+        x = x + self.ffn(self.ffn_norm(x))
 
         # Optional final norm (common in Pre-LN stacks)
         # x = self.final_norm(x)                      # final_norm: LayerNorm
 
         return x
+
 
 class MaGating(nnx.Module):
     """Applies multiplicative and additive gating."""

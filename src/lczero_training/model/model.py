@@ -66,8 +66,6 @@ class LczeroModel(nnx.Module):
         x = jnp.astype(x, get_dtype(self.config.defaults.compute_dtype))
         x = jnp.transpose(x, (1, 2, 0))
         x = jnp.reshape(x, (64, self._input_channels))
-        print("x before embedding:", x.shape)
-        print("embedding expected in_features:", self.embedding.embedding.kernel.value.shape[0])
         x = self.embedding(x)
         x = self.encoders(x)
 

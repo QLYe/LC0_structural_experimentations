@@ -185,10 +185,10 @@ class LeelaPytreeWeightsVisitor:
         param: Any,
         leela: net_pb2.Weights.Layer,
     ) -> None:
-        print(
-            param.shape,
-            len(leela.params) // 2,
-            math.prod(param.shape),
+        actual_size = len(leela.params) // 2
+        expected_size = math.prod(param.shape)
+        assert actual_size == expected_size, (
+            f"Leela tensor size {actual_size} does not match JAX shape "
+            f"{param.shape} with size {expected_size}."
         )
-        assert len(leela.params) // 2 == math.prod(param.shape)
         assert len(leela.params) != 0
