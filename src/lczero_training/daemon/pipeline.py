@@ -2,7 +2,6 @@ import dataclasses
 import datetime
 import gzip
 import logging
-import math
 import os
 import threading
 import time
@@ -114,11 +113,6 @@ class TrainingPipeline:
     _cycle_state: _TrainingCycleState
     _metrics: Metrics | None
 
-    # --- added: best-by-loss checkpointing support ---
-    _network_loss_sum: float
-    _network_loss_count: int
-    _last_network_avg_loss: float | None
-
     def __init__(self, config_filepath: str) -> None:
         logger.info(f"Loading config from {config_filepath}")
         self._config = self._load_config(config_filepath)
@@ -131,27 +125,17 @@ class TrainingPipeline:
         self._force_training_event = threading.Event()
         self._metrics = None
 
-        # --- added: initialize loss accumulator ---
-        self._network_loss_sum = 0.0
-        self._network_loss_count = 0
-        self._last_network_avg_loss = None
-
         logger.info("Creating empty model")
         self._model = LczeroModel(self._config.model, rngs=nnx.Rngs(params=42))
         logger.info(
             f"Creating checkpoint manager at {self._config.training.checkpoint.path}"
         )
 
-        # --- modified: enable "best-N by metric" retention in Orbax ---
-        # Set checkpoint.max_to_keep = 10 in config to keep the best 10 checkpoints by train_loss.
         self._checkpoint_mgr = ocp.CheckpointManager(
             self._config.training.checkpoint.path,
             options=ocp.CheckpointManagerOptions(
-                max_to_keep=self._config.training.checkpoint.max_to_keep or None,
-                best_fn=lambda m: float(m["train_loss"]),
-                best_mode="min",
-                # keep old checkpoints that were saved before we attached metrics
-                keep_checkpoints_without_metrics=True,
+                max_to_keep=self._config.training.checkpoint.max_to_keep
+                or None,
             ),
         )
 
@@ -325,26 +309,6 @@ class TrainingPipeline:
         # Append current learning rate from schedule to metrics.
         hook_data.metrics["lr"] = self._lr_schedule(hook_data.global_step)
 
-        # --- added: accumulate avg loss over the "network" ---
-        # StepHookData has local_step and steps_per_epoch (your TB logs already show this).
-        if hook_data.local_step == 0:
-            self._network_loss_sum = 0.0
-            self._network_loss_count = 0
-            self._last_network_avg_loss = None
-
-        loss = hook_data.metrics.get("loss", None)
-        if loss is not None:
-            try:
-                self._network_loss_sum += float(jax.device_get(loss))
-                self._network_loss_count += 1
-            except Exception:
-                pass
-
-        if (hook_data.local_step + 1) == hook_data.steps_per_epoch and self._network_loss_count > 0:
-            self._last_network_avg_loss = self._network_loss_sum / self._network_loss_count
-            # also log to TB
-            hook_data.metrics["network_avg_loss"] = self._last_network_avg_loss
-
         if self._metrics is not None:
             self._metrics.on_step(hook_data, nnx.graphdef(self._model))
 
@@ -384,16 +348,9 @@ class TrainingPipeline:
 
     def _save_checkpoint(self) -> None:
         logging.info("Saving checkpoint")
-
-        # --- added: attach metric for best-N checkpoint selection ---
-        train_loss = self._last_network_avg_loss
-        if train_loss is None:
-            train_loss = math.inf
-
         self._checkpoint_mgr.save(
             step=self._training_state.jit_state.step,
             args=ocp.args.PyTreeSave(item=self._training_state),
-            metrics={"train_loss": float(train_loss)},
         )
         logging.info("Checkpoint saved")
 
